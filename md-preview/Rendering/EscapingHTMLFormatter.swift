@@ -25,6 +25,64 @@ nonisolated enum MarkdownHighlightSource {
         let scope: Int
     }
 
+    private struct HighlightPair {
+        let opening: Int
+        let closing: Int
+    }
+
+    private struct ParsedTextScope {
+        let range: Range<Int>
+        let id: Int
+    }
+
+    private struct SourceOffsetMap {
+        let lineByteStarts: [Int]
+        let characterByteOffsets: [Int]
+
+        init(characters: [Character]) {
+            var lineByteStarts = [0]
+            var characterByteOffsets: [Int] = []
+            characterByteOffsets.reserveCapacity(characters.count + 1)
+
+            var byteOffset = 0
+            for character in characters {
+                characterByteOffsets.append(byteOffset)
+                byteOffset += String(character).utf8.count
+                let lineEnding = character.unicodeScalars.last?.value
+                if lineEnding == 0x0A || lineEnding == 0x0D {
+                    lineByteStarts.append(byteOffset)
+                }
+            }
+            characterByteOffsets.append(byteOffset)
+            self.lineByteStarts = lineByteStarts
+            self.characterByteOffsets = characterByteOffsets
+        }
+
+        func characterOffset(for location: SourceLocation) -> Int? {
+            guard location.line > 0,
+                  location.line <= lineByteStarts.count,
+                  location.column > 0 else {
+                return nil
+            }
+
+            let target = lineByteStarts[location.line - 1] + location.column - 1
+            var lowerBound = 0
+            var upperBound = characterByteOffsets.count
+            while lowerBound < upperBound {
+                let middle = lowerBound + (upperBound - lowerBound) / 2
+                let candidate = characterByteOffsets[middle]
+                if target < candidate {
+                    upperBound = middle
+                } else if target > candidate {
+                    lowerBound = middle + 1
+                } else {
+                    return middle
+                }
+            }
+            return nil
+        }
+    }
+
     private static let htmlBlockTags: Set<String> = [
         "address", "article", "aside", "base", "basefont", "blockquote",
         "body", "caption", "center", "col", "colgroup", "dd", "details",
@@ -129,6 +187,7 @@ nonisolated enum MarkdownHighlightSource {
 
         var openDelimiters: [Delimiter] = []
         var replacements: [Int: String] = [:]
+        var pairs: [HighlightPair] = []
         for delimiter in delimiters {
             while let opener = openDelimiters.last,
                   opener.scope != delimiter.scope {
@@ -137,6 +196,8 @@ nonisolated enum MarkdownHighlightSource {
             if delimiter.canClose, let opener = openDelimiters.popLast() {
                 replacements[opener.start] = openingToken
                 replacements[delimiter.start] = closingToken
+                pairs.append(HighlightPair(opening: opener.start, closing: delimiter.start))
+                continue
             }
             if delimiter.canOpen {
                 openDelimiters.append(delimiter)
@@ -155,7 +216,106 @@ nonisolated enum MarkdownHighlightSource {
             rewritten[start] = tokenCharacters[0]
             rewritten[start + 1] = tokenCharacters[1]
         }
-        return String(rewritten)
+        return restoringRejectedPairs(in: rewritten, pairs: pairs)
+    }
+
+    private static func restoringRejectedPairs(in characters: [Character],
+                                               pairs: [HighlightPair]) -> String {
+        let document = Document(parsing: String(characters))
+        let offsetMap = SourceOffsetMap(characters: characters)
+        var scopes: [ParsedTextScope] = []
+        var nextScope = 0
+        collectTextScopes(
+            from: document,
+            offsetMap: offsetMap,
+            scopes: &scopes,
+            nextScope: &nextScope
+        )
+        scopes.sort { $0.range.lowerBound < $1.range.lowerBound }
+
+        var restored = characters
+        for pair in pairs {
+            let openingScope = scope(containing: pair.opening, in: scopes)
+            let closingScope = scope(containing: pair.closing, in: scopes)
+            guard let openingScope, openingScope == closingScope else {
+                restoreDelimiter(at: pair.opening, in: &restored)
+                restoreDelimiter(at: pair.closing, in: &restored)
+                continue
+            }
+        }
+        return String(restored)
+    }
+
+    @discardableResult
+    private static func collectTextScopes(from markup: Markup,
+                                          offsetMap: SourceOffsetMap,
+                                          scopes: inout [ParsedTextScope],
+                                          nextScope: inout Int) -> Bool {
+        if markup is CodeBlock
+            || markup is HTMLBlock
+            || markup is Image
+            || markup is InlineCode
+            || markup is InlineHTML
+            || markup is SymbolLink {
+            return markup is InlineHTML
+        }
+
+        var scope = nextScope
+        var containsInlineHTML = false
+        nextScope += 1
+        for child in markup.children {
+            if child is InlineHTML {
+                containsInlineHTML = true
+                scope = nextScope
+                nextScope += 1
+            } else if let text = child as? Text,
+                      let range = text.range,
+                      let lowerBound = offsetMap.characterOffset(for: range.lowerBound),
+                      let upperBound = offsetMap.characterOffset(for: range.upperBound),
+                      lowerBound < upperBound {
+                scopes.append(
+                    ParsedTextScope(range: lowerBound..<upperBound, id: scope)
+                )
+            } else if collectTextScopes(
+                from: child,
+                offsetMap: offsetMap,
+                scopes: &scopes,
+                nextScope: &nextScope
+            ) {
+                containsInlineHTML = true
+                scope = nextScope
+                nextScope += 1
+            }
+        }
+        return containsInlineHTML
+    }
+
+    private static func scope(containing delimiter: Int,
+                              in scopes: [ParsedTextScope]) -> Int? {
+        var lowerBound = 0
+        var upperBound = scopes.count
+        while lowerBound < upperBound {
+            let middle = lowerBound + (upperBound - lowerBound) / 2
+            let candidate = scopes[middle]
+            if delimiter < candidate.range.lowerBound {
+                upperBound = middle
+            } else if delimiter + 1 >= candidate.range.upperBound {
+                lowerBound = middle + 1
+            } else {
+                return candidate.id
+            }
+        }
+        return nil
+    }
+
+    private static func restoreDelimiter(at start: Int,
+                                         in characters: inout [Character]) {
+        guard characters.indices.contains(start),
+              characters.indices.contains(start + 1) else {
+            return
+        }
+        characters[start] = "="
+        characters[start + 1] = "="
     }
 
     private static func protectFencedCode(in characters: [Character],
@@ -286,7 +446,7 @@ nonisolated enum MarkdownHighlightSource {
             index += 1
             spaces += 1
         }
-        return spaces >= 4 || (index > line.from && characters[line.from] == "\t")
+        return spaces >= 4 || (index < line.to && characters[index] == "\t")
     }
 
     private static func protectLinkDestinations(in characters: [Character],

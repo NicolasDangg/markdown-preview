@@ -333,4 +333,100 @@ final class EscapingHTMLFormatterTests: XCTestCase {
         XCTAssertTrue(html.contains("==opens here"), html)
         XCTAssertTrue(html.contains("closes here=="), html)
     }
+
+    func testObsidianHighlightClosingDelimiterIsNotReusedAsAnOpener() {
+        let html = EscapingHTMLFormatter.format("==one==two== after")
+
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">one</mark>two== after"),
+            html
+        )
+    }
+
+    func testObsidianHighlightPreservesTabIndentedCode() {
+        for prefix in ["\t", " \t", "  \t", "   \t"] {
+            let html = EscapingHTMLFormatter.format("\(prefix)==literal==")
+
+            XCTAssertTrue(html.contains("<code>==literal=="), html)
+            XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+        }
+    }
+
+    func testObsidianHighlightPreservesReferenceDefinitionDestinationAndTitle() {
+        let markdown = """
+        [link][id]
+
+        [id]: https://example.com/?a==b==c "title ==literal=="
+        """
+        let html = EscapingHTMLFormatter.format(markdown)
+
+        XCTAssertTrue(html.contains("href=\"https://example.com/?a==b==c\""), html)
+        XCTAssertFalse(html.contains(MarkdownHighlightSource.openingToken), html)
+        XCTAssertFalse(html.contains(MarkdownHighlightSource.closingToken), html)
+        XCTAssertEqual(MarkdownHighlightSource.preparing(markdown), markdown)
+    }
+
+    func testObsidianHighlightDoesNotCrossEmphasisBoundary() {
+        let html = EscapingHTMLFormatter.format("==*hello== world*")
+
+        XCTAssertTrue(html.contains("==<em>hello== world</em>"), html)
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+    }
+
+    func testObsidianHighlightDoesNotCrossLinkBoundary() {
+        let html = EscapingHTMLFormatter.format("==[hello==](https://example.com)")
+
+        XCTAssertTrue(
+            html.contains("==<a href=\"https://example.com\">hello==</a>"),
+            html
+        )
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+    }
+
+    func testObsidianHighlightCanContainCompleteNestedInlineMarkup() {
+        let html = EscapingHTMLFormatter.format("==hello *world*==")
+
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">hello <em>world</em></mark>"),
+            html
+        )
+    }
+
+    func testObsidianHighlightDoesNotCrossTableCells() {
+        let html = EscapingHTMLFormatter.format("""
+        | ==one | two== |
+        | --- | --- |
+        """)
+
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+        XCTAssertTrue(html.contains("==one"), html)
+        XCTAssertTrue(html.contains("two=="), html)
+    }
+
+    func testObsidianHighlightDoesNotCrossInlineHTML() {
+        let html = EscapingHTMLFormatter.format("==<span>hello==</span>")
+
+        XCTAssertTrue(html.contains("==<span>hello==</span>"), html)
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+    }
+
+    func testObsidianHighlightUsesUTF8LocationsAfterCommonMarkLineEndings() {
+        for lineEnding in ["\n", "\r\n", "\r"] {
+            let html = EscapingHTMLFormatter.format(
+                "first\(lineEnding)second ==highlighted=="
+            )
+
+            XCTAssertTrue(
+                html.contains("second <mark class=\"md-highlight\">highlighted</mark>"),
+                html
+            )
+        }
+    }
+
+    func testObsidianHighlightDoesNotCrossNestedInlineHTML() {
+        let html = EscapingHTMLFormatter.format("==before *</mark>* after==")
+
+        XCTAssertTrue(html.contains("==before <em></mark></em> after=="), html)
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+    }
 }
