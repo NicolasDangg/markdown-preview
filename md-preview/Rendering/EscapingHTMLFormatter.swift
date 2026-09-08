@@ -119,25 +119,20 @@ nonisolated enum MarkdownHighlightSource {
             blockBoundaries: &blockBoundaries
         )
 
+        // Delimiters must be paired within the parser's text containers. A
+        // line-based scope splits soft-wrapped quote/list paragraphs, while
+        // pairing globally can consume a both-sided delimiter from a later
+        // block before AST validation gets a chance to reject it.
+        let sourceScopes = parsedTextScopes(in: characters)
+
         var delimiters: [Delimiter] = []
         var index = 0
-        var scope = 0
-        var previousLineWasBlockBoundary = false
         while index < characters.count {
             if blockBoundaries[index] {
                 while index < characters.count, blockBoundaries[index] {
                     index += 1
                 }
-                scope += 1
                 continue
-            }
-            if index == 0 || characters[index - 1] == "\n" {
-                let blankLine = isBlankLineStart(characters, at: index)
-                let blockLine = isBlockBoundaryLineStart(characters, at: index)
-                if blankLine || blockLine || previousLineWasBlockBoundary {
-                    scope += 1
-                }
-                previousLineWasBlockBoundary = blankLine || blockLine
             }
             guard characters[index] == "=", !protected[index] else {
                 index += 1
@@ -171,14 +166,16 @@ nonisolated enum MarkdownHighlightSource {
             // participate in delimiter matching independently.
             var pairStart = start + (length.isMultiple(of: 2) ? 0 : 1)
             while pairStart + 1 < end {
-                delimiters.append(
-                    Delimiter(
-                        start: pairStart,
-                        canOpen: leftFlanking,
-                        canClose: rightFlanking,
-                        scope: scope
+                if let scope = scope(containing: pairStart, in: sourceScopes) {
+                    delimiters.append(
+                        Delimiter(
+                            start: pairStart,
+                            canOpen: leftFlanking,
+                            canClose: rightFlanking,
+                            scope: scope
+                        )
                     )
-                )
+                }
                 pairStart += 2
             }
         }
@@ -221,18 +218,7 @@ nonisolated enum MarkdownHighlightSource {
 
     private static func restoringRejectedPairs(in characters: [Character],
                                                pairs: [HighlightPair]) -> String {
-        let document = Document(parsing: String(characters))
-        let offsetMap = SourceOffsetMap(characters: characters)
-        var scopes: [ParsedTextScope] = []
-        var nextScope = 0
-        collectTextScopes(
-            from: document,
-            offsetMap: offsetMap,
-            scopes: &scopes,
-            nextScope: &nextScope
-        )
-        scopes.sort { $0.range.lowerBound < $1.range.lowerBound }
-
+        let scopes = parsedTextScopes(in: characters)
         var restored = characters
         for pair in pairs {
             let openingScope = scope(containing: pair.opening, in: scopes)
@@ -244,6 +230,21 @@ nonisolated enum MarkdownHighlightSource {
             }
         }
         return String(restored)
+    }
+
+    private static func parsedTextScopes(in characters: [Character]) -> [ParsedTextScope] {
+        let document = Document(parsing: String(characters))
+        let offsetMap = SourceOffsetMap(characters: characters)
+        var scopes: [ParsedTextScope] = []
+        var nextScope = 0
+        collectTextScopes(
+            from: document,
+            offsetMap: offsetMap,
+            scopes: &scopes,
+            nextScope: &nextScope
+        )
+        scopes.sort { $0.range.lowerBound < $1.range.lowerBound }
+        return scopes
     }
 
     @discardableResult
@@ -356,44 +357,40 @@ nonisolated enum MarkdownHighlightSource {
 
     private static func protectInlineCode(in characters: [Character],
                                           protected: inout [Bool]) {
-        var index = 0
-        while index < characters.count {
-            guard characters[index] == "`", !protected[index],
-                  !isEscaped(characters, at: index) else {
-                index += 1
-                continue
-            }
+        // Let the block/inline parser decide which backtick runs form a code
+        // span. A source-wide scan can incorrectly pair runs from separate
+        // paragraphs, while these ranges preserve valid multiline spans in a
+        // single paragraph.
+        guard characters.contains("`") else { return }
+        let document = Document(parsing: String(characters))
+        let offsetMap = SourceOffsetMap(characters: characters)
+        protectInlineCode(
+            in: document,
+            offsetMap: offsetMap,
+            protected: &protected
+        )
+    }
 
-            let runStart = index
-            while index < characters.count, characters[index] == "`" {
-                index += 1
+    private static func protectInlineCode(in markup: Markup,
+                                          offsetMap: SourceOffsetMap,
+                                          protected: inout [Bool]) {
+        if let inlineCode = markup as? InlineCode,
+           let range = inlineCode.range,
+           let lowerBound = offsetMap.characterOffset(for: range.lowerBound),
+           let upperBound = offsetMap.characterOffset(for: range.upperBound),
+           lowerBound < upperBound {
+            for position in lowerBound..<upperBound {
+                protected[position] = true
             }
-            let runLength = index - runStart
-            var cursor = index
-            var found = false
+            return
+        }
 
-            while cursor < characters.count {
-                guard characters[cursor] == "`", !protected[cursor] else {
-                    cursor += 1
-                    continue
-                }
-                let closeStart = cursor
-                while cursor < characters.count, characters[cursor] == "`" {
-                    cursor += 1
-                }
-                if cursor - closeStart == runLength {
-                    for position in runStart..<cursor {
-                        protected[position] = true
-                    }
-                    index = cursor
-                    found = true
-                    break
-                }
-            }
-
-            if !found {
-                index = runStart + runLength
-            }
+        for child in markup.children {
+            protectInlineCode(
+                in: child,
+                offsetMap: offsetMap,
+                protected: &protected
+            )
         }
     }
 
@@ -607,70 +604,6 @@ nonisolated enum MarkdownHighlightSource {
             ranges.append((from: start, to: characters.count))
         }
         return ranges
-    }
-
-    private static func isBlankLineStart(_ characters: [Character], at index: Int) -> Bool {
-        guard index == 0 || characters[index - 1] == "\n" else { return false }
-        var cursor = index
-        while cursor < characters.count, characters[cursor] != "\n" {
-            guard characters[cursor] == " " || characters[cursor] == "\t" else {
-                return false
-            }
-            cursor += 1
-        }
-        return true
-    }
-
-    private static func isBlockBoundaryLineStart(_ characters: [Character], at index: Int) -> Bool {
-        guard index == 0 || characters[index - 1] == "\n" else { return false }
-        var lineEnd = index
-        while lineEnd < characters.count, characters[lineEnd] != "\n" {
-            lineEnd += 1
-        }
-        var cursor = index
-        var indentation = 0
-        while cursor < lineEnd, characters[cursor] == " " {
-            cursor += 1
-            indentation += 1
-        }
-        if indentation >= 4 { return true }
-        guard cursor < lineEnd else { return false }
-
-        if characters[cursor] == ">" { return true }
-        if characters[cursor] == "#" {
-            var count = 0
-            while cursor < lineEnd, characters[cursor] == "#" {
-                cursor += 1
-                count += 1
-            }
-            return count <= 6
-                && (cursor == lineEnd
-                    || characters[cursor] == " "
-                    || characters[cursor] == "\t")
-        }
-        if characters[cursor] == "-"
-            || characters[cursor] == "+"
-            || characters[cursor] == "*" {
-            return cursor + 1 == lineEnd
-                || characters[cursor + 1] == " "
-                || characters[cursor + 1] == "\t"
-        }
-        if characters[cursor].isNumber {
-            while cursor < lineEnd, characters[cursor].isNumber {
-                cursor += 1
-            }
-            guard cursor < lineEnd,
-                  characters[cursor] == "." || characters[cursor] == ")" else {
-                return false
-            }
-            return cursor + 1 == lineEnd
-                || characters[cursor + 1] == " "
-                || characters[cursor + 1] == "\t"
-        }
-        return htmlBlockTag(
-            at: (from: index, to: lineEnd),
-            in: characters
-        ) != nil
     }
 
     private static func fence(at line: (from: Int, to: Int),

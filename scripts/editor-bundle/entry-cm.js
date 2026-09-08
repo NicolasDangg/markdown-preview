@@ -128,9 +128,22 @@ const obsidianHighlight = {
   parseInline: [{
     name: "Highlight",
     parse(cx, next, pos) {
-      if (next !== 61 || cx.char(pos + 1) !== 61 || cx.char(pos + 2) === 61) return -1
-      const before = cx.slice(pos - 1, pos)
-      const after = cx.slice(pos + 2, pos + 3)
+      if (next !== 61 || cx.char(pos + 1) !== 61) return -1
+      let runStart = pos
+      while (runStart > cx.offset && cx.char(runStart - 1) === 61) runStart--
+      let runEnd = pos + 2
+      while (cx.char(runEnd) === 61) runEnd++
+      const pairStart = runStart + ((runEnd - runStart) % 2)
+      if (pos < pairStart || (pos - pairStart) % 2 !== 0) return -1
+      let backslashes = 0
+      for (let cursor = runStart - 1;
+           cursor >= cx.offset && cx.char(cursor) === 92;
+           cursor--) {
+        backslashes++
+      }
+      if (backslashes % 2 !== 0) return -1
+      const before = cx.slice(runStart - 1, runStart)
+      const after = cx.slice(runEnd, runEnd + 1)
       const spaceBefore = highlightWhitespace(before)
       const spaceAfter = highlightWhitespace(after)
       const punctuationBefore = highlightPunctuationAround(before)

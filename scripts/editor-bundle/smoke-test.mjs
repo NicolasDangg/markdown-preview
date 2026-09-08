@@ -109,6 +109,26 @@ check("unmatched or whitespace-delimited markers stay literal",
   invalidHighlightHost.querySelector(".cm-md-highlight") == null
     && (invalidHighlightHost.querySelector(".cm-content")?.textContent ?? "").includes("== open =="))
 
+const evenHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(evenHighlightHost)
+const evenHighlightSource = "====hello===="
+dom.window.MDEditor.create(evenHighlightHost, evenHighlightSource, {})
+check("even highlight runs split into independent pairs",
+  evenHighlightHost.querySelectorAll(".cm-md-highlight").length === 2
+    && Array.from(evenHighlightHost.querySelectorAll(".cm-md-highlight"))
+      .every((element) => element.textContent === "hello"))
+
+const oddHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(oddHighlightHost)
+const oddHighlightSource = "=====hello====="
+dom.window.MDEditor.create(oddHighlightHost, oddHighlightSource, {})
+check("odd highlight runs leave one literal equals before each pair",
+  oddHighlightHost.querySelectorAll(".cm-md-highlight").length === 2
+    && Array.from(oddHighlightHost.querySelectorAll(".cm-md-highlight"))
+      .every((element) => element.textContent === "hello=")
+    && (oddHighlightHost.querySelector(".cm-content")?.textContent ?? "")
+      === "=hello=")
+
 const linkHighlightHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(linkHighlightHost)
 const linkHighlightSource = "[==label==](https://example.com/?a==b==c) and \\==literal\\== and ==visible=="

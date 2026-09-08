@@ -429,4 +429,71 @@ final class EscapingHTMLFormatterTests: XCTestCase {
         XCTAssertTrue(html.contains("==before <em></mark></em> after=="), html)
         XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
     }
+
+    func testObsidianHighlightSupportsAContinuationLineInAQuotedParagraph() {
+        let html = EscapingHTMLFormatter.format("> ==Quoted highlight\n> continues here==")
+
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">Quoted highlight")
+                && html.contains("continues here</mark>"),
+            html
+        )
+    }
+
+    func testObsidianHighlightSupportsAContinuationLineInAListParagraph() {
+        let html = EscapingHTMLFormatter.format("- ==List highlight\n  continues here==")
+
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">List highlight")
+                && html.contains("continues here</mark>"),
+            html
+        )
+    }
+
+    func testObsidianHighlightDoesNotCrossListItems() {
+        let html = EscapingHTMLFormatter.format("- ==opens here\n- closes here==")
+
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+        XCTAssertTrue(html.contains("==opens here"), html)
+        XCTAssertTrue(html.contains("closes here=="), html)
+    }
+
+    func testObsidianHighlightDoesNotLetAnUnclosedCodeSpanHideTheNextParagraph() {
+        let html = EscapingHTMLFormatter.format("`unclosed\n\n==Highlight between paragraphs==\n\n`")
+
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">Highlight between paragraphs</mark>"),
+            html
+        )
+    }
+
+    func testObsidianHighlightPreservesAValidMultilineCodeSpan() {
+        for lineEnding in ["\n", "\r\n", "\r"] {
+            let html = EscapingHTMLFormatter.format("`code\(lineEnding)==literal==`")
+
+            XCTAssertTrue(html.contains("<code>"), html)
+            XCTAssertTrue(html.contains("==literal=="), html)
+            XCTAssertFalse(html.contains("<mark class=\"md-highlight\">"), html)
+        }
+    }
+
+    func testObsidianHighlightDoesNotConsumeABothSidedDelimiterFromAnotherParagraph() {
+        let html = EscapingHTMLFormatter.format("==unclosed\n\nword==valid==")
+
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">unclosed"), html)
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">valid</mark>"),
+            html
+        )
+    }
+
+    func testObsidianHighlightDoesNotConsumeABothSidedDelimiterFromAnotherListItem() {
+        let html = EscapingHTMLFormatter.format("- ==unclosed\n- word==valid==")
+
+        XCTAssertFalse(html.contains("<mark class=\"md-highlight\">unclosed"), html)
+        XCTAssertTrue(
+            html.contains("<mark class=\"md-highlight\">valid</mark>"),
+            html
+        )
+    }
 }
